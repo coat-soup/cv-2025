@@ -11,24 +11,34 @@ mp_drawing = mp.solutions.drawing_utils
 # Webcam setup
 cap = cv2.VideoCapture(0)
 
+
 # Screen dimensions (adjust these for your display resolution)
 screen_width = 1920
 screen_height = 1080
 
+# Heatmap
+heatmap = np.zeros((screen_height, screen_width), dtype=np.float32)
+time_running = 0
+
 # Smoothin params
-move_speed = 0.1
+move_speed = 0.05
 screen_gaze = (0,0)
 
 # Eye and iris landmark indices
-LEFT_EYE_IDX = [362, 385, 387, 263, 373, 380]  # Simplified for left eye
-RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]  # Simplified for right eye
-LEFT_IRIS_IDX = [469, 470, 471, 472]  # Iris landmarks for left eye
-RIGHT_IRIS_IDX = [474, 475, 476, 477]  # Iris landmarks for right eye
-LEFT_EYE_TOP_BOTTOM_IDX = [386, 374]  # Top and bottom of the left eye
-RIGHT_EYE_TOP_BOTTOM_IDX = [159, 145]  # Top and bottom of the right eye
+LEFT_EYE_IDX = [362, 385, 387, 263, 373, 380]
+RIGHT_EYE_IDX = [33, 160, 158, 133, 153, 144]
+LEFT_IRIS_IDX = [469, 470, 471, 472]
+RIGHT_IRIS_IDX = [474, 475, 476, 477]
+LEFT_EYE_TOP_BOTTOM_IDX = [386, 374]
+RIGHT_EYE_TOP_BOTTOM_IDX = [159, 145]
 
+# Standard linear interpolation
 def lerp(a,b,t):
     return a + (b-a) * t
+
+# Returns limits if value outside of range
+def clamp(val, _min, _max):
+    return max(min(val, _max), _min)
 
 # Function to calculate the center of the iris
 def calculate_iris_center(iris_landmarks):
@@ -36,36 +46,29 @@ def calculate_iris_center(iris_landmarks):
     y_coords = [landmark[1] for landmark in iris_landmarks]
     return int(np.mean(x_coords)), int(np.mean(y_coords))
 
+
 # Function to map gaze to screen coordinates
 def map_gaze_to_screen(iris_center, eye_box, eye_top_bottom_dist, screen_width, screen_height, vs=5):
     eye_width = eye_box[1][0] - eye_box[0][0]
     
     # Normalize the iris position within the eye box (0,0) to (1,1)
     iris_x_normalized = (iris_center[0] - eye_box[0][0]) / eye_width
-    iris_y_normalized = (iris_center[1] - eye_box[0][1]) / eye_top_bottom_dist
-    
-    """
-    # Apply a non-linear scaling to the vertical movement (like sensitivity)
-    if iris_y_normalized < 0.5:
-        # If iris is in the upper half, scale it upward more rapidly
-        iris_y_normalized = 0.5 + (iris_y_normalized - 0.5) ** (1 / vertical_sensitivity)
-        print("smal",iris_y_normalized)
-    else:
-        # If iris is in the lower half, scale it downward more rapidly
-        iris_y_normalized = 0.5 - math.abs(iris_y_normalized - 0.5) ** (1 / vertical_sensitivity)
-        print("big", iris_y_normalized)"""
-    
+    iris_y_normalized = (iris_center[1] - eye_box[0][1]) / eye_top_bottom_dist    
 
     #iris_y_normalized = vs * (iris_y_normalized - 0.5) + 0.5
 
     iris_y_normalized = max(min(iris_y_normalized, 1), 0)
 
-    bias, scale = -2000, 4
+    bias, scale = -2500, 4
 
     # Map to screen coordinates
     screen_x = int(screen_width - iris_x_normalized * screen_width)
     screen_y = int(screen_height - iris_y_normalized * screen_height) * scale + bias
-    
+
+    #screen_x = clamp(screen_x, 0, screen_width)
+    #screen_y = clamp(screen_y, 0, screen_height)
+    print(screen_x, screen_y)
+
     return screen_x, screen_y
 
 # Set window properties to fullscreen
@@ -73,6 +76,8 @@ cv2.namedWindow('Eye Tracking', cv2.WND_PROP_FULLSCREEN)
 cv2.setWindowProperty('Eye Tracking', cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
 
 while True:
+    time_running += 0.1
+
     ret, frame = cap.read()
     if not ret:
         break
@@ -135,10 +140,22 @@ while True:
             # Draw the gaze point on the fullscreen frame
             cv2.circle(fullscreen_frame, screen_gaze, 10, (255, 0, 0), -1)
 
-    # Resize the camera feed to 1/4th of the screen size
-    small_frame = cv2.resize(frame, (screen_width // 4, screen_height // 4))
+            # Draw to heatmap
+            temp_heatmap = np.zeros_like(heatmap)
+            cv2.circle(temp_heatmap, screen_gaze, 50, 1.0, -1)
+            temp_heatmap = cv2.GaussianBlur(temp_heatmap, (101, 101), 0) # Blur for smoothing
+            heatmap = cv2.add(heatmap, temp_heatmap)  # Add heatmap values (preserves previous values)
+
     
-    # Place the resized camera feed in the top-left corner of the fullscreen frame
+    # Normalize heatmap to 0-255 and apply a color map
+    heatmap_norm = np.clip((heatmap/time_running) * 255.0, 0, 255).astype(np.uint8)
+    colored_heatmap = cv2.applyColorMap(heatmap_norm, cv2.COLORMAP_JET)
+    
+    # Blend the colored heatmap with the fullscreen frame
+    fullscreen_frame = cv2.addWeighted(colored_heatmap, 0.7, fullscreen_frame, 0.3, 0)
+    
+    # Resize the camera feed and place it in the corner
+    small_frame = cv2.resize(frame, (screen_width // 4, screen_height // 4))
     fullscreen_frame[0:small_frame.shape[0], 0:small_frame.shape[1]] = small_frame
 
     # Display the fullscreen frame
